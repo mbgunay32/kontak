@@ -1,0 +1,68 @@
+name: IPA derle
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode sürümü
+        run: xcodebuild -version
+
+      - name: XcodeGen kur ve projeyi üret
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Derle (imzasız)
+        run: |
+          set -o pipefail
+          xcodebuild -project Kontak.xcodeproj -scheme Kontak \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | grep -E "error:|warning: .*Kontak/|\*\* BUILD" || true
+          test -d build/Build/Products/Release-iphoneos/Kontak.app
+
+      - name: IPA paketle
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Kontak.app Payload/
+          zip -qry Kontak.ipa Payload
+
+      - name: Derleme kaydını yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: IPA'yı yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kontak-ipa
+          path: Kontak.ipa
+
+      - name: Releases'a yayınla
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest Kontak.ipa \
+            --title "Kontak (son sürüm)" \
+            --notes "Otomatik derleme · commit ${GITHUB_SHA::7}" \
+            --latest

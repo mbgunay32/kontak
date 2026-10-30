@@ -47,6 +47,7 @@ extension Color {
 }
 
 enum Theme {
-    static let accent = Color(hex: 0xF97316)
+    /// Same red as the "K" in the app icon.
+    static let accent = Color(hex: 0xE4161F)
     static let card = Color.white.opacity(0.06)
 }

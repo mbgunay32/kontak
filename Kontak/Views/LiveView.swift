@@ -65,11 +65,12 @@ struct LiveView: View {
             Label(isRecording ? "Sürüşü bitir" : "Sürüşü başlat",
                   systemImage: isRecording ? "stop.fill" : "play.fill")
                 .font(.title3.bold())
+                .foregroundStyle(isRecording ? Color.black : Color.white)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
         }
         .buttonStyle(.borderedProminent)
-        .tint(isRecording ? .red : Theme.accent)
+        .tint(isRecording ? Color.white : Theme.accent)
     }
 
     @ViewBuilder

@@ -2,6 +2,9 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(RideRecorder.self) private var recorder
+    @State private var shared: SharedFile?
+    @State private var lineCount = 0
+    @State private var confirmClear = false
 
     var body: some View {
         @Bindable var recorder = recorder
@@ -30,12 +33,41 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Button {
+                        if let url = DiagLog.shared.exportForSharing() {
+                            shared = SharedFile(url: url)
+                        }
+                    } label: {
+                        Label("Günlüğü paylaş", systemImage: "doc.text")
+                    }
+                    Button(role: .destructive) {
+                        confirmClear = true
+                    } label: {
+                        Label("Günlüğü temizle", systemImage: "trash")
+                    }
+                } header: {
+                    Text("Tanılama")
+                } footer: {
+                    Text("Günlük, uygulamanın ne zaman kayda başladığını, GPS'in ne kadar doğru olduğunu ve neyi neden saydığını yazar. \(lineCount) satır.")
+                }
+
+                Section {
                     LabeledContent("Sürüm", value: appVersion)
                 } footer: {
                     Text("Kontak kişisel kullanım için yazıldı. Sürüşlerin yalnızca bu telefonda saklanır, hiçbir yere gönderilmez.")
                 }
             }
             .navigationTitle("Ayarlar")
+            .onAppear { lineCount = DiagLog.shared.lineCount }
+            .sheet(item: $shared) { file in
+                ActivityView(url: file.url)
+            }
+            .confirmationDialog("Günlük silinsin mi?", isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("Günlüğü temizle", role: .destructive) {
+                    DiagLog.shared.clear()
+                    lineCount = DiagLog.shared.lineCount
+                }
+            }
         }
     }
 

@@ -32,7 +32,20 @@ struct KontakApp: App {
 }
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
+        tabs
+            .onChange(of: scenePhase) { _, phase in
+                switch phase {
+                case .active: DiagLog.shared.log("uygulama", "ön plana geldi")
+                case .background: DiagLog.shared.log("uygulama", "arka plana geçti")
+                default: break
+                }
+            }
+    }
+
+    private var tabs: some View {
         TabView {
             LiveView()
                 .tabItem { Label("Sürüş", systemImage: "gauge.with.needle") }

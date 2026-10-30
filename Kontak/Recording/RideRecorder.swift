@@ -17,8 +17,20 @@ final class LocationProxy: NSObject, CLLocationManagerDelegate {
         onAuthorization?(manager.authorizationStatus)
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        DiagLog.shared.log("konum", "hata: \(error.localizedDescription)")
+    }
+
+    func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        DiagLog.shared.log("konum", "iOS konum güncellemelerini duraklattı (hareketsizlik)")
+    }
+
+    func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
+        DiagLog.shared.log("konum", "iOS konum güncellemelerini sürdürdü")
+    }
 }
+
+private func kmh(_ mps: Double) -> String { String(format: "%.0f", mps * 3.6) }
 
 /// Records rides. Two location modes:
 /// - watching (idle + auto mode): coarse, battery-friendly updates plus significant-change
@@ -39,6 +51,7 @@ final class RideRecorder {
     var autoMode: Bool {
         didSet {
             UserDefaults.standard.set(autoMode, forKey: Keys.autoMode)
+            DiagLog.shared.log("ayar", "otomatik kayıt \(autoMode ? "AÇIK" : "KAPALI")")
             if autoMode && !hasAlways { requestPermission() }
             refreshWatching()
         }
@@ -61,6 +74,17 @@ final class RideRecorder {
     @ObservationIgnored private var slowSince: Date?
     @ObservationIgnored private var pointsSinceFlush = 0
 
+    // Diagnostics counters, summarised in the log every 15 s while recording.
+    @ObservationIgnored private var diagAccepted = 0
+    @ObservationIgnored private var diagRejectedAccuracy = 0
+    @ObservationIgnored private var diagRejectedJump = 0
+    @ObservationIgnored private var diagStale = 0
+    @ObservationIgnored private var diagLastSummary = Date()
+    @ObservationIgnored private var diagLastAccuracy: Double = -1
+    @ObservationIgnored private var watchMode = "kapalı"
+
+    private let log = DiagLog.shared
+
     init() {
         autoMode = UserDefaults.standard.bool(forKey: Keys.autoMode)
         authorization = manager.authorizationStatus
@@ -68,6 +92,15 @@ final class RideRecorder {
         manager.activityType = .automotiveNavigation
         proxy.onLocations = { [weak self] locations in self?.handle(locations) }
         proxy.onAuthorization = { [weak self] status in self?.authorizationChanged(status) }
+
+        let appState: String
+        switch UIApplication.shared.applicationState {
+        case .active: appState = "ön planda"
+        case .inactive: appState = "geçişte"
+        case .background: appState = "ARKA PLANDA (iOS tarafından başlatıldı)"
+        @unknown default: appState = "?"
+        }
+        log.log("uygulama", "açıldı · \(appState) · izin=\(permissionText) · otomatik=\(autoMode ? "açık" : "kapalı")")
         refreshWatching()
     }
 
@@ -109,6 +142,7 @@ final class RideRecorder {
 
     private func authorizationChanged(_ status: CLAuthorizationStatus) {
         authorization = status
+        log.log("izin", "konum izni: \(permissionText) · hassas konum: \(manager.accuracyAuthorization == .fullAccuracy ? "açık" : "KAPALI")")
         refreshWatching()
     }
 
@@ -117,9 +151,13 @@ final class RideRecorder {
     func start(auto: Bool = false) {
         guard state == .idle else { return }
         guard canRecord else {
+            log.log("kayıt", "başlatılamadı: konum izni yok (\(permissionText))")
             requestPermission()
             return
         }
+        log.log("kayıt", "BAŞLADI · \(auto ? "otomatik" : "elle")")
+        diagAccepted = 0; diagRejectedAccuracy = 0; diagRejectedJump = 0; diagStale = 0
+        diagLastSummary = Date()
         stats = RideStats()
         startDate = Date()
         isAutoStarted = auto
@@ -141,6 +179,7 @@ final class RideRecorder {
     }
 
     func stop() {
+        log.log("kayıt", "elle bitirildi")
         finish(trimAfter: nil)
     }
 
@@ -150,7 +189,9 @@ final class RideRecorder {
         if let cutoff {
             let limit = cutoff.timeIntervalSince1970
             final = RideStats.replay(stats.points.filter { $0.t <= limit })
+            log.log("kayıt", "sondaki bekleme kesildi: \(stats.points.count - final.points.count) nokta çıkarıldı")
         }
+        log.log("kayıt", "BİTTİ · mesafe=\(Int(final.distance)) m · nokta=\(final.points.count) · hareket=\(Int(final.movingTime)) s · durma=\(Int(final.stoppedTime)) s · azami=\(kmh(final.maxSpeed)) km/h · sert fren=\(final.hardBrakes) · sert hızlanma=\(final.hardAccels) · durak=\(final.stopCount)")
         save(final)
         clearRecoveryFile()
 
@@ -169,11 +210,20 @@ final class RideRecorder {
     private func save(_ s: RideStats) {
         guard s.distance >= Self.minimumRideDistance else {
             lastMessage = "Sürüş 300 m'den kısa olduğu için kaydedilmedi."
+            log.log("kayıt", "kaydedilmedi: \(Int(s.distance)) m < 300 m")
             return
         }
-        guard let context else { return }
+        guard let context else {
+            log.log("kayıt", "HATA: veritabanı bağlı değil, sürüş kaydedilemedi")
+            return
+        }
         context.insert(Ride(stats: s))
-        try? context.save()
+        do {
+            try context.save()
+            log.log("kayıt", "veritabanına kaydedildi")
+        } catch {
+            log.log("kayıt", "HATA: kaydedilemedi: \(error.localizedDescription)")
+        }
         lastMessage = "Sürüş kaydedildi: \(Fmt.km(s.distance))"
     }
 
@@ -181,6 +231,11 @@ final class RideRecorder {
 
     private func refreshWatching() {
         guard state == .idle else { return }
+        let mode = autoMode && hasAlways ? "açık" : (autoMode ? "beklemede (izin 'Her Zaman' değil)" : "kapalı")
+        if mode != watchMode {
+            watchMode = mode
+            log.log("izleme", "otomatik başlatma izlemesi: \(mode)")
+        }
         if autoMode && hasAlways {
             manager.startMonitoringSignificantLocationChanges()
             manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
@@ -207,28 +262,42 @@ final class RideRecorder {
     private func watch(_ loc: CLLocation) {
         guard autoMode, state == .idle else { return }
         guard loc.timestamp.timeIntervalSinceNow > -60,
-              loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= 200 else { return }
+              loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= 200 else {
+            log.log("izleme", "nokta atlandı · doğruluk=\(Int(loc.horizontalAccuracy)) m · yaş=\(Int(-loc.timestamp.timeIntervalSinceNow)) s")
+            return
+        }
 
         var speed = loc.speed
+        var source = "gps"
         if speed < 0, let prev = lastWatch {
             let dt = loc.timestamp.timeIntervalSince(prev.timestamp)
-            if dt > 2 { speed = loc.distance(from: prev) / dt }
+            if dt > 2 {
+                speed = loc.distance(from: prev) / dt
+                source = "hesap"
+            }
         }
         lastWatch = loc
 
+        let base = "hız=\(speed >= 0 ? kmh(speed) : "?") km/h (\(source)) · doğruluk=\(Int(loc.horizontalAccuracy)) m"
         if loc.speed >= Self.instantStartSpeed {
+            log.log("izleme", "\(base) → hemen başlat")
             start(auto: true)
             return
         }
         if speed >= Self.autoStartSpeed {
             if let since = fastSince {
                 if loc.timestamp.timeIntervalSince(since) >= 5 {
+                    log.log("izleme", "\(base) → 5 sn hızlı, başlat")
                     start(auto: true)
+                } else {
+                    log.log("izleme", "\(base) → aday")
                 }
             } else {
                 fastSince = loc.timestamp
+                log.log("izleme", "\(base) → aday (ilk)")
             }
         } else {
+            if fastSince != nil { log.log("izleme", "\(base) → aday iptal") }
             fastSince = nil
         }
     }
@@ -236,14 +305,22 @@ final class RideRecorder {
     // MARK: - Recording
 
     private func record(_ loc: CLLocation) {
-        guard loc.timestamp.timeIntervalSinceNow > -30 else { return }
+        defer { logSummaryIfDue() }
+        guard loc.timestamp.timeIntervalSinceNow > -30 else {
+            diagStale += 1
+            return
+        }
+        diagLastAccuracy = loc.horizontalAccuracy
 
         if isAutoStarted {
             checkAutoStop(speed: max(loc.speed, 0), at: loc.timestamp)
             if state != .recording { return }
         }
 
-        guard loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= 30 else { return }
+        guard loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= 30 else {
+            diagRejectedAccuracy += 1
+            return
+        }
 
         let altitude: Double? = (loc.verticalAccuracy > 0 && loc.verticalAccuracy <= 15) ? loc.altitude : nil
         let point = TrackPoint(
@@ -253,8 +330,24 @@ final class RideRecorder {
             alt: altitude,
             t: loc.timestamp.timeIntervalSince1970
         )
-        guard stats.add(point) else { return }
+        let prevSpeed = stats.points.last?.speed ?? 0
+        let brakesBefore = stats.hardBrakes, accelsBefore = stats.hardAccels, stopsBefore = stats.stopCount
+        guard stats.add(point) else {
+            diagRejectedJump += 1
+            return
+        }
+        diagAccepted += 1
         currentSpeed = stats.points.last?.speed ?? 0
+
+        if stats.hardBrakes > brakesBefore {
+            log.log("olay", "SERT FREN · \(kmh(prevSpeed)) → \(kmh(currentSpeed)) km/h")
+        }
+        if stats.hardAccels > accelsBefore {
+            log.log("olay", "SERT HIZLANMA · \(kmh(prevSpeed)) → \(kmh(currentSpeed)) km/h")
+        }
+        if stats.stopCount > stopsBefore {
+            log.log("olay", "durak sayıldı (\(stats.stopCount). durak)")
+        }
 
         pointsSinceFlush += 1
         if pointsSinceFlush >= 30 { flushRecovery() }
@@ -264,14 +357,26 @@ final class RideRecorder {
         if speed < RideStats.movingSpeed {
             if let since = slowSince {
                 if time.timeIntervalSince(since) >= Self.autoStopDelay {
+                    log.log("kayıt", "5 dk hareketsiz → otomatik bitiriliyor")
                     finish(trimAfter: since)
                 }
             } else {
                 slowSince = time
+                log.log("kayıt", "durdu · 5 dk böyle kalırsa kayıt biter")
             }
         } else {
+            if let since = slowSince {
+                log.log("kayıt", "tekrar hareket · \(Int(time.timeIntervalSince(since))) sn beklendi")
+            }
             slowSince = nil
         }
+    }
+
+    private func logSummaryIfDue() {
+        guard state == .recording, Date().timeIntervalSince(diagLastSummary) >= 15 else { return }
+        diagLastSummary = Date()
+        log.log("kayıt", "özet · hız=\(kmh(currentSpeed)) km/h · doğruluk=\(Int(diagLastAccuracy)) m · mesafe=\(Int(stats.distance)) m · kabul=\(diagAccepted) · red(doğruluk)=\(diagRejectedAccuracy) · red(sıçrama)=\(diagRejectedJump) · eski=\(diagStale)")
+        diagAccepted = 0; diagRejectedAccuracy = 0; diagRejectedJump = 0; diagStale = 0
     }
 
     // MARK: - Crash recovery
@@ -301,6 +406,7 @@ final class RideRecorder {
               let data = try? Data(contentsOf: recoveryURL),
               let points = try? JSONDecoder().decode([TrackPoint].self, from: data) else { return }
         clearRecoveryFile()
+        log.log("kurtarma", "yarım kalan sürüş bulundu: \(points.count) nokta, kurtarılıyor")
         save(RideStats.replay(points))
     }
 }

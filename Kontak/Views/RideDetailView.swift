@@ -5,6 +5,7 @@ struct RideDetailView: View {
     let ride: Ride
     private let segments: [RouteSegment]
     @State private var showCard = false
+    @State private var shared: SharedFile?
 
     init(ride: Ride) {
         self.ride = ride
@@ -46,8 +47,22 @@ struct RideDetailView: View {
                         .padding(.vertical, 12)
                 }
                 .buttonStyle(.borderedProminent)
+
+                Button {
+                    if let url = RideExport.csv(for: ride) {
+                        shared = SharedFile(url: url)
+                    }
+                } label: {
+                    Label("Ham veriyi dışa aktar (CSV)", systemImage: "tablecells")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.bordered)
             }
             .padding()
+        }
+        .sheet(item: $shared) { file in
+            ActivityView(url: file.url)
         }
         .navigationTitle(Fmt.day(ride.start))
         .navigationBarTitleDisplayMode(.inline)

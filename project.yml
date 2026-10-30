@@ -6,15 +6,16 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.2"
-    CURRENT_PROJECT_VERSION: "4"
+    MARKETING_VERSION: "0.3"
+    CURRENT_PROJECT_VERSION: "5"
     CODE_SIGN_STYLE: Automatic
 targets:
   Kontak:
     type: application
     platform: iOS
     sources: [Kontak]
-    scheme: {}
+    scheme:
+      testTargets: [KontakTests]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mbgunay32.kontak
@@ -33,3 +34,13 @@ targets:
         NSLocationWhenInUseUsageDescription: Kontak sürüşlerini kaydetmek için konumunu kullanır.
         NSLocationAlwaysAndWhenInUseUsageDescription: Otomatik kayıt için Kontak, uygulama kapalıyken de hareket etmeye başladığını algılamak ister. Konumun telefondan dışarı gönderilmez.
         NSPhotoLibraryAddUsageDescription: Paylaşım kartını Fotoğraflar'a kaydetmek için.
+  KontakTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [KontakTests]
+    dependencies:
+      - target: Kontak
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.mbgunay32.kontak.tests

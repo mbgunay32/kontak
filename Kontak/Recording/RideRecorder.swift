@@ -8,6 +8,7 @@ import UIKit
 final class LocationProxy: NSObject, CLLocationManagerDelegate {
     var onLocations: (([CLLocation]) -> Void)?
     var onAuthorization: ((CLAuthorizationStatus) -> Void)?
+    var onPause: (() -> Void)?
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         onLocations?(locations)
@@ -23,6 +24,7 @@ final class LocationProxy: NSObject, CLLocationManagerDelegate {
 
     func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
         DiagLog.shared.log("konum", "iOS konum güncellemelerini duraklattı (hareketsizlik)")
+        onPause?()
     }
 
     func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
@@ -47,6 +49,7 @@ final class RideRecorder {
     private(set) var isAutoStarted = false
     private(set) var authorization: CLAuthorizationStatus = .notDetermined
     private(set) var lastMessage: String?
+    private(set) var isPrecise = true
 
     var autoMode: Bool {
         didSet {
@@ -82,6 +85,10 @@ final class RideRecorder {
     @ObservationIgnored private var diagLastSummary = Date()
     @ObservationIgnored private var diagLastAccuracy: Double = -1
     @ObservationIgnored private var watchMode = "kapalı"
+    @ObservationIgnored private var watchPaused = false
+    @ObservationIgnored private var lastLocationAt: Date?
+    @ObservationIgnored private var lastAcceptedAt: Date?
+    @ObservationIgnored private var watchdog: Timer?
 
     private let log = DiagLog.shared
 
@@ -92,6 +99,11 @@ final class RideRecorder {
         manager.activityType = .automotiveNavigation
         proxy.onLocations = { [weak self] locations in self?.handle(locations) }
         proxy.onAuthorization = { [weak self] status in self?.authorizationChanged(status) }
+        proxy.onPause = { [weak self] in
+            guard let self, self.state == .idle else { return }
+            self.watchPaused = true
+        }
+        isPrecise = manager.accuracyAuthorization == .fullAccuracy
 
         let appState: String
         switch UIApplication.shared.applicationState {
@@ -142,6 +154,7 @@ final class RideRecorder {
 
     private func authorizationChanged(_ status: CLAuthorizationStatus) {
         authorization = status
+        isPrecise = manager.accuracyAuthorization == .fullAccuracy
         log.log("izin", "konum izni: \(permissionText) · hassas konum: \(manager.accuracyAuthorization == .fullAccuracy ? "açık" : "KAPALI")")
         refreshWatching()
     }
@@ -175,7 +188,25 @@ final class RideRecorder {
         if backgroundSession == nil {
             backgroundSession = CLBackgroundActivitySession()
         }
+        watchPaused = false
+        lastLocationAt = Date()
+        lastAcceptedAt = nil
         manager.startUpdatingLocation()
+
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.checkWatchdog()
+        }
+    }
+
+    /// Ends an auto-started ride if GPS has gone completely silent (e.g. underground car park),
+    /// since the normal auto-stop only runs when a location arrives.
+    private func checkWatchdog() {
+        guard state == .recording, isAutoStarted,
+              let last = lastLocationAt,
+              Date().timeIntervalSince(last) >= Self.autoStopDelay * 2 else { return }
+        log.log("kayıt", "10 dk hiç konum gelmedi → otomatik bitiriliyor")
+        finish(trimAfter: lastAcceptedAt ?? last)
     }
 
     func stop() {
@@ -201,6 +232,8 @@ final class RideRecorder {
         isAutoStarted = false
         currentSpeed = 0
         slowSince = nil
+        watchdog?.invalidate()
+        watchdog = nil
         backgroundSession?.invalidate()
         backgroundSession = nil
         manager.stopUpdatingLocation()
@@ -251,6 +284,13 @@ final class RideRecorder {
     }
 
     private func handle(_ locations: [CLLocation]) {
+        // After iOS paused the coarse updates, the next location comes from
+        // significant-change monitoring. Turn the coarse updates back on.
+        if state == .idle && watchPaused && autoMode && hasAlways {
+            watchPaused = false
+            log.log("izleme", "önemli konum değişikliği uyandırdı · izleme yeniden başlatıldı")
+            manager.startUpdatingLocation()
+        }
         for location in locations {
             switch state {
             case .idle: watch(location)
@@ -311,6 +351,7 @@ final class RideRecorder {
             return
         }
         diagLastAccuracy = loc.horizontalAccuracy
+        lastLocationAt = Date()
 
         if isAutoStarted {
             checkAutoStop(speed: max(loc.speed, 0), at: loc.timestamp)
@@ -337,6 +378,7 @@ final class RideRecorder {
             return
         }
         diagAccepted += 1
+        lastAcceptedAt = loc.timestamp
         currentSpeed = stats.points.last?.speed ?? 0
 
         if stats.hardBrakes > brakesBefore {

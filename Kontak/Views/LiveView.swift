@@ -76,7 +76,15 @@ struct LiveView: View {
     @ViewBuilder
     private var status: some View {
         VStack(spacing: 10) {
-            if !recorder.canRecord {
+            if recorder.canRecord && !recorder.isPrecise {
+                VStack(spacing: 6) {
+                    Text("Hassas Konum kapalı, sürüş kaydedilemez. Ayarlar → Kontak → Konum → Hassas Konum'u aç.")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    Button("Ayarları aç") { recorder.requestPermission() }
+                        .buttonStyle(.bordered)
+                }
+            } else if !recorder.canRecord {
                 Button("Konum iznini ver") { recorder.requestPermission() }
                     .buttonStyle(.bordered)
             } else if recorder.autoMode && !recorder.hasAlways {

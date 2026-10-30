@@ -24,9 +24,7 @@ struct HistoryView: View {
                             .foregroundStyle(.secondary)
                     }
                     ForEach(rides) { ride in
-                        NavigationLink {
-                            RideDetailView(ride: ride)
-                        } label: {
+                        NavigationLink(value: ride) {
                             RideRow(ride: ride)
                         }
                     }
@@ -34,6 +32,9 @@ struct HistoryView: View {
                 }
             }
             .navigationTitle("Geçmiş")
+            .navigationDestination(for: Ride.self) { ride in
+                RideDetailView(ride: ride)
+            }
         }
     }
 
